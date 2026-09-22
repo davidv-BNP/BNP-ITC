@@ -163,23 +163,41 @@
     el.innerHTML = html;
   }
 
+  // One request at a time, with a bounded backoff on failure. The old
+  // version started a new endless 3s retry loop on EVERY failed poll, so a
+  // dashboard left open during an outage kept multiplying its own requests
+  // — part of what pushed the project toward Apps Script's limit of 1,000
+  // simultaneous executions.
+  var boardInFlight = false;
+  var boardStartedAt = 0;
+  var boardFailures = 0;
+  var reloadAfterFlight = false;
+
   function loadBoard() {
     if (!activeBoard) return;
+    if (boardInFlight && Date.now() - boardStartedAt < 120000) { reloadAfterFlight = true; return; }
+    boardInFlight = true;
+    boardStartedAt = Date.now();
+    reloadAfterFlight = false;
     var requestedBoard = activeBoard;
     fetch(apiUrl({ board: activeBoard }))
       .then(function (r) { return r.json(); })
       .then(function (payload) {
-        if (requestedBoard !== activeBoard) return; // switched tabs mid-flight
+        boardInFlight = false;
+        if (requestedBoard !== activeBoard) { loadBoard(); return; } // switched tabs mid-flight
         if (payload.error) throw new Error(payload.error);
+        boardFailures = 0;
         renderRows(payload);
         document.getElementById('statusLine').textContent = 'Updated ' + new Date().toLocaleTimeString();
+        if (reloadAfterFlight) loadBoard(); // a button was pressed while this was loading
       })
       .catch(function (err) {
-        document.getElementById('statusLine').textContent = 'Could not refresh: ' + (err && err.message ? err.message : err);
-        // Same Safari/Apps Script redirect-token timing as index.html — a
-        // fresh attempt a few seconds later almost always succeeds, so
-        // don't just wait out the rest of the normal REFRESH_MS cycle.
-        setTimeout(loadBoard, 3000);
+        boardInFlight = false;
+        boardFailures++;
+        document.getElementById('statusLine').textContent = 'Could not refresh (retrying): ' + (err && err.message ? err.message : err);
+        // A couple of early retries (5s, then 10s); after that, just the
+        // regular poll.
+        if (boardFailures <= 2) setTimeout(loadBoard, 5000 * boardFailures);
       });
   }
 
@@ -216,7 +234,7 @@
       .then(function (payload) {
         if (payload.error) throw new Error(payload.error);
         initAttempts = 0;
-        REFRESH_MS = (payload.refreshSeconds || 15) * 1000;
+        REFRESH_MS = Math.max(30000, (payload.refreshSeconds || 30) * 1000); // at least 30s — every poll is an Apps Script execution
         BOARD_KEYS = payload.boards.map(function (b) { return b.key; });
         payload.boards.forEach(function (b) { BOARD_TITLES[b.key] = b.title; });
         activeBoard = BOARD_KEYS[0];

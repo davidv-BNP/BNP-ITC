@@ -133,7 +133,7 @@ var SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxam4BfUlwb6ugCosvQ4BH
 // Which board this page shows comes from its own URL, e.g. index.html?board=in
 var BOARD_KEY = new URLSearchParams(window.location.search).get('board') || '';
 
-var DATA_REFRESH_MS = 30000; // how often to re-fetch the sheet
+var DATA_REFRESH_MS = 60000; // how often to re-fetch — boards only change when the sheet is edited or a dashboard button is pressed, and every poll is an Apps Script execution
 // Every TV, plus the Overview page's 6 iframes, plus both manager
 // dashboards, all poll on this same interval — if their clocks are ever in
 // sync (e.g. several TVs powered on together each morning) that's a burst
@@ -143,7 +143,7 @@ var DATA_REFRESH_MS = 30000; // how often to re-fetch the sheet
 // added to (or subtracted from) DATA_REFRESH_MS on every single poll, so
 // clocks that start out aligned drift apart within a poll or two instead of
 // staying locked together.
-var DATA_REFRESH_JITTER_MS = 8000;
+var DATA_REFRESH_JITTER_MS = 10000;
 var esc = function (s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
     return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
@@ -336,7 +336,7 @@ var FAILURES_BEFORE_SHOWING_ERROR = 3;
 // (a new execution gets a new token), retrying quickly instead of waiting
 // out the rest of the normal ~30s cycle makes each flash much shorter and
 // far less likely to ever reach FAILURES_BEFORE_SHOWING_ERROR at all.
-var QUICK_RETRY_MS = 3000;
+var QUICK_RETRY_MS = 5000;
 
 // A full page reload (e.g. the kiosk box refreshing the URL, not just this
 // script's own 30s poll) has nothing to fall back on above — it starts from
@@ -426,9 +426,9 @@ function loadData() {
       consecutiveFailures++;
       console.warn('Board poll failed (' + consecutiveFailures + ' in a row):', err);
       if (consecutiveFailures < FAILURES_BEFORE_SHOWING_ERROR) {
-        // Try again in a few seconds rather than waiting out the rest of the
-        // ~30s cycle — most of these clear on the very next attempt.
-        setTimeout(loadData, QUICK_RETRY_MS);
+        // A couple of early retries with a growing delay (5s, then 10s)
+        // rather than waiting out the whole poll cycle.
+        setTimeout(loadData, QUICK_RETRY_MS * consecutiveFailures);
         return;
       }
       if (hasRenderedOnce) {
