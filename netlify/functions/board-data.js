@@ -13,11 +13,19 @@
 // "Could not reach the Apps Script data endpoint" / JSON SyntaxError that
 // was popping up on the TVs and dashboards.
 //
-// A server has no such throttling, so this function follows that redirect
-// itself, on Node, every time — removing the flaky part entirely instead
-// of just retrying around it. It also caches briefly, so a burst of
-// several TVs (or the Overview page's 6 iframes) polling at once only
-// costs ONE real Apps Script call instead of one per screen.
+// IMPORTANT: Node's built-in fetch(url, {redirect:'follow'}) does NOT carry
+// a Set-Cookie from hop 1 into hop 2 the way a real browser does — there's
+// no cookie jar. When Google's first response sets a cookie the second hop
+// checks for, a plain automatic-follow request can 404 on that second hop
+// every single time it's called from a server, even though the exact same
+// URL usually succeeds in a browser. That's why this function follows the
+// redirect chain MANUALLY below: it reads the Location + any Set-Cookie
+// off each hop's response and explicitly resends that cookie on the next
+// request, instead of trusting fetch's automatic redirect handling.
+//
+// It also caches briefly, so a burst of several TVs (or the Overview
+// page's 6 iframes) polling at once only costs ONE real Apps Script call
+// instead of one per screen.
 //
 // Requires Node 18+ (for global fetch/AbortController/URLSearchParams) —
 // see the netlify.toml alongside this file.
@@ -45,14 +53,48 @@ function cacheKeyFor(params) {
   return entries.join('&');
 }
 
+var MAX_REDIRECTS = 5;
+
 async function fetchUpstreamOnce(url) {
   var ctrl = new AbortController();
   var timer = setTimeout(function () { ctrl.abort(); }, 8000);
   try {
-    var res = await fetch(url, { signal: ctrl.signal, redirect: 'follow' });
-    var text = await res.text();
-    JSON.parse(text); // throws if we somehow still got an HTML error page
-    return text;
+    var currentUrl = url;
+    var cookieHeader = '';
+
+    for (var hop = 0; hop < MAX_REDIRECTS; hop++) {
+      var res = await fetch(currentUrl, {
+        signal: ctrl.signal,
+        redirect: 'manual',
+        headers: cookieHeader ? { Cookie: cookieHeader } : {}
+      });
+
+      // Carry forward any cookie this hop sets — this is the piece plain
+      // fetch(..., {redirect:'follow'}) drops (see the comment up top).
+      var setCookie = (typeof res.headers.getSetCookie === 'function')
+        ? res.headers.getSetCookie()
+        : (res.headers.get('set-cookie') ? [res.headers.get('set-cookie')] : []);
+      if (setCookie && setCookie.length) {
+        var newPairs = setCookie.map(function (c) { return c.split(';')[0]; });
+        cookieHeader = (cookieHeader ? cookieHeader + '; ' : '') + newPairs.join('; ');
+      }
+
+      if (res.status >= 300 && res.status < 400) {
+        var loc = res.headers.get('location');
+        if (!loc) throw new Error('Redirect response (status ' + res.status + ') had no Location header');
+        currentUrl = new URL(loc, currentUrl).toString();
+        continue; // follow it ourselves, cookie in hand
+      }
+
+      var text = await res.text();
+      if (res.status !== 200) {
+        throw new Error('Upstream returned HTTP ' + res.status + (text ? ': ' + text.slice(0, 200) : ''));
+      }
+      JSON.parse(text); // throws if we somehow still got an HTML error page
+      return text;
+    }
+
+    throw new Error('Too many redirects (' + MAX_REDIRECTS + ') following the Apps Script response');
   } finally {
     clearTimeout(timer);
   }
