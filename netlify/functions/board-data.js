@@ -43,6 +43,12 @@ var CACHE_MS = 12000;
 // today's behavior for everyone.
 var cache = {};
 
+// Last successful response per request, kept much longer than the cache
+// above. If Apps Script is slow or erroring, the TVs keep showing this
+// (a few minutes old at worst) instead of a red error card.
+var STALE_OK_MS = 15 * 60 * 1000;
+var lastGood = {};
+
 function cacheKeyFor(params) {
   var entries = [];
   params.forEach(function (value, key) {
@@ -101,13 +107,15 @@ async function fetchUpstreamOnce(url) {
 }
 
 async function fetchUpstream(url) {
+  var started = Date.now();
   try {
     return await fetchUpstreamOnce(url);
   } catch (err) {
-    // One immediate server-side retry. This is the same mitigation as the
-    // client-side quick-retry, just running somewhere that isn't subject to
-    // Safari's redirect-timing quirk in the first place — so this should
-    // rarely even need to fire, and almost never fail twice in a row.
+    // Retry once only if that failed FAST (e.g. an expired-redirect 404).
+    // If it timed out, Apps Script is overloaded — a second request just
+    // adds another execution to its queue, which is how the 70–100s pile-up
+    // happened. Fall back to the last good copy instead (see the handler).
+    if (Date.now() - started > 3000) throw err;
     return fetchUpstreamOnce(url);
   }
 }
@@ -147,6 +155,11 @@ exports.handler = async function (event) {
   try {
     body = await fetchUpstream(upstreamUrl);
   } catch (err) {
+    var fallback = !isWrite && lastGood[key];
+    if (fallback && now - fallback.at < STALE_OK_MS) {
+      console.warn('Upstream failed, serving last good copy for ' + key + ': ' + (err && err.message));
+      return respond(200, fallback.body);
+    }
     return respond(
       502,
       JSON.stringify({ error: 'Upstream Apps Script call failed: ' + (err && err.message ? err.message : String(err)) })
@@ -157,8 +170,10 @@ exports.handler = async function (event) {
     // A state change just happened (a dashboard button click) — nothing
     // cached should keep serving pre-change data for any board.
     cache = {};
+    lastGood = {};
   } else {
     cache[key] = { body: body, expiresAt: now + CACHE_MS };
+    if (body.indexOf('{"error"') !== 0) lastGood[key] = { body: body, at: now };
   }
 
   return respond(200, body);
