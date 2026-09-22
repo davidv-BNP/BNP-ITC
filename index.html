@@ -324,6 +324,9 @@ function updateClock() {
 // or several polls in a row have failed.
 var hasRenderedOnce = false;
 var consecutiveFailures = 0;
+var requestInFlight = false;
+var requestStartedAt = 0;
+var lastGoodPayload = null;
 var FAILURES_BEFORE_SHOWING_ERROR = 3;
 // Confirmed root cause of the flash itself: Safari occasionally delays
 // following Apps Script's second (script.googleusercontent.com) redirect
@@ -400,30 +403,44 @@ function loadData() {
       '<div class="err-card">No board specified &mdash; add ?board=in (or out / prep / order_processing / orderholding / rental) to this page\'s URL.</div>';
     return;
   }
+  // Only one request at a time. Google sometimes queues Apps Script requests
+  // for 30–80s; firing the next poll (or a quick retry) on top of one that's
+  // still waiting just adds to that same queue.
+  if (requestInFlight && Date.now() - requestStartedAt < 120000) return;
+  requestInFlight = true;
+  requestStartedAt = Date.now();
   var url = SCRIPT_URL + '?format=json&board=' + encodeURIComponent(BOARD_KEY) + '&_=' + Date.now();
   fetch(url)
     .then(function (r) { return r.json(); })
     .then(function (payload) {
+      requestInFlight = false;
       if (payload.error) { throw new Error(payload.error); }
       consecutiveFailures = 0;
       hasRenderedOnce = true;
+      lastGoodPayload = payload;
       renderPayload(payload, { fade: true });
       writeCachedPayload(payload);
     })
     .catch(function (err) {
+      requestInFlight = false;
       consecutiveFailures++;
       console.warn('Board poll failed (' + consecutiveFailures + ' in a row):', err);
-      if (hasRenderedOnce && consecutiveFailures < FAILURES_BEFORE_SHOWING_ERROR) {
-        // Keep showing the last good board, and try again in a few seconds
-        // rather than waiting out the rest of the ~30s cycle — most of
-        // these clear on the very next attempt (see QUICK_RETRY_MS above).
-        // The regularly-scheduled poll still fires on its own timer too;
-        // this is a purely additive early attempt, not a replacement for it.
+      if (consecutiveFailures < FAILURES_BEFORE_SHOWING_ERROR) {
+        // Try again in a few seconds rather than waiting out the rest of the
+        // ~30s cycle — most of these clear on the very next attempt.
         setTimeout(loadData, QUICK_RETRY_MS);
         return;
       }
+      if (hasRenderedOnce) {
+        // Never replace a good board with an error card — keep showing it,
+        // flagged as last-known data, until a poll succeeds again.
+        if (lastGoodPayload && consecutiveFailures === FAILURES_BEFORE_SHOWING_ERROR) {
+          renderPayload(lastGoodPayload, { stale: true });
+        }
+        return;
+      }
       document.getElementById('content').innerHTML =
-        '<div class="err-card">Could not reach the Apps Script data endpoint. Check SCRIPT_URL and that the deployment allows anonymous access.<br><br>' + esc(err) + '</div>';
+        '<div class="err-card">Could not reach the Apps Script data endpoint. Still retrying every ' + Math.round(DATA_REFRESH_MS / 1000) + 's.<br><br>' + esc(err) + '</div>';
     });
 }
 
@@ -438,6 +455,7 @@ setInterval(updateClock, 1000);
   var cached = readCachedPayload();
   if (cached) {
     hasRenderedOnce = true;
+    lastGoodPayload = cached;
     renderPayload(cached, { stale: true });
   }
 })();
