@@ -71,11 +71,8 @@
   // Same deployed Apps Script /exec URL as index.html. Get it from
   // Deploy > Manage deployments in the Apps Script editor if it changes.
   // =======================================================================
-  // Same-origin Netlify Function, not script.google.com directly — see the
-  // comment on this same line in index.html and netlify/functions/board-data.js
-  // for why. This dashboard's setFlag button clicks also go through it, so
-  // it forwards ?action=setFlag calls straight through, uncached.
-  var SCRIPT_URL = '/.netlify/functions/board-data';
+  // Fetched directly — see the comment on this same line in index.html.
+  var SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxam4BfUlwb6ugCosvQ4BHKsTwklUcTo-z1D6UL67iEBu7jelq6fF4jOv6ZouSd_sJG4g/exec';
 
   var REFRESH_MS = 15000; // matches DASHBOARD_REFRESH_SECONDS in Code.gs
   var REFRESH_JITTER_MS = 4000; // same reasoning as index.html — keeps this poll from landing in lockstep with the TVs' own polls

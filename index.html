@@ -124,17 +124,11 @@
 // Deployed Apps Script /exec URL. Get it from Deploy > Manage deployments
 // in the Apps Script editor if you ever need to change it.
 // =======================================================================
-// Same-origin Netlify Function, NOT script.google.com directly. The actual
-// confirmed cause of the intermittent red error card: Apps Script serves
-// every response through a second redirect to script.googleusercontent.com
-// carrying a short-lived one-time token, and Safari can delay following
-// that redirect (background-tab throttling / ITP) just long enough for the
-// token to expire — a 404 HTML page instead of JSON. That's a browser-side
-// timing problem, so the real fix is having a server (which isn't subject
-// to any of that) follow the redirect instead. See
-// netlify/functions/board-data.js — it does that, caches briefly, and this
-// page just talks to it like any other same-origin JSON endpoint.
-var SCRIPT_URL = '/.netlify/functions/board-data';
+// Fetched directly (Apps Script's JSON responses allow cross-origin reads).
+// The site used to go through a Netlify Function proxy; it was dropped when
+// the site moved to GitHub Pages. Code.gs serves pre-built, stored boards,
+// so each poll is a quick read rather than a full spreadsheet scan.
+var SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxam4BfUlwb6ugCosvQ4BHKsTwklUcTo-z1D6UL67iEBu7jelq6fF4jOv6ZouSd_sJG4g/exec';
 
 // Which board this page shows comes from its own URL, e.g. index.html?board=in
 var BOARD_KEY = new URLSearchParams(window.location.search).get('board') || '';
