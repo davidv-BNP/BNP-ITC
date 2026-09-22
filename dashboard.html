@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BNP &middot; Manager Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Lato:wght@400;700;800;900&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:#0B0D10; --panel:#14171C; --border:#262B33; --text:#F5F6F7; --sub:#8B93A1;
+    --accent:#E8A33D; --accent-bg:rgba(232,163,61,0.14);
+    --urgent:#E5484D; --urgent-bg:rgba(229,72,77,0.16);
+    --ok:#3FB950; --ok-bg:rgba(63,185,80,0.14);
+    --mgmt:#FF00E5; --mgmt-bg:rgba(255,0,229,0.16);
+  }
+  * { box-sizing:border-box; font-family:'Lato', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+  html, body { margin:0; background:var(--bg); color:var(--text); }
+  body { min-height:100vh; padding:20px; }
+
+  h1 { font-size:20px; margin:0 0 4px 0; }
+  .sub { color:var(--sub); font-size:13px; margin-bottom:18px; }
+
+  .tabs { display:flex; flex-wrap:wrap; gap:8px; border-bottom:1px solid var(--border); padding-bottom:14px; margin-bottom:18px; }
+  .tab { padding:9px 16px; border-radius:8px; border:1px solid var(--border); background:var(--panel); color:var(--sub); font-size:14px; font-weight:700; cursor:pointer; }
+  .tab.active { background:var(--accent-bg); border-color:var(--accent); color:var(--accent); }
+
+  .rows { max-width:900px; }
+  .empty-note { color:var(--sub); font-size:14px; padding:24px; text-align:center; border:1px dashed var(--border); border-radius:10px; }
+  .err-note { color:var(--urgent); font-size:14px; padding:24px; text-align:center; border:1px dashed var(--urgent); border-radius:10px; }
+
+  .row { display:flex; align-items:center; gap:16px; background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:14px 18px; margin-bottom:10px; transition:border-color 0.15s, background 0.15s; }
+  .row.urgent { border-color:var(--urgent); background:var(--urgent-bg); }
+  .row.complete { border-color:var(--ok); background:var(--ok-bg); opacity:0.75; }
+  .row.in-process:not(.urgent) { border-color:var(--accent); }
+  .row.mgmt:not(.urgent):not(.complete) { border-color:var(--mgmt); background:var(--mgmt-bg); }
+
+  .row-main { flex:1 1 auto; min-width:0; }
+  .row-num { display:inline-block; font-size:11px; font-weight:800; color:var(--accent); background:var(--accent-bg); border:1px solid var(--accent); border-radius:5px; padding:2px 7px; margin-bottom:5px; letter-spacing:0.03em; }
+  .row-desc { font-size:16px; font-weight:700; line-height:1.3; }
+  .row-meta { font-size:12px; color:var(--sub); margin-top:3px; }
+
+  .actions { display:flex; gap:8px; flex:0 0 auto; }
+  .btn { padding:9px 14px; border-radius:7px; border:1px solid var(--border); background:transparent; color:var(--text); font-size:13px; font-weight:700; cursor:pointer; white-space:nowrap; }
+  .btn:hover { filter:brightness(1.15); }
+  .btn:active { transform:translateY(1px); }
+  .btn-urgent { border-color:var(--urgent); color:var(--urgent); }
+  .btn-urgent.on { background:var(--urgent); color:#1a0a0a; }
+  .btn-process { border-color:var(--accent); color:var(--accent); }
+  .btn-process.on { background:var(--accent); color:#221604; }
+  .btn-complete { border-color:var(--ok); color:var(--ok); }
+  .btn-complete.on { background:var(--ok); color:#04220c; }
+  .btn-mgmt { border-color:var(--mgmt); color:var(--mgmt); }
+  .btn-mgmt.on { background:var(--mgmt); color:#1a0016; }
+  .btn:disabled { opacity:0.4; cursor:default; }
+
+  .status-line { font-size:12px; color:var(--sub); margin-top:16px; }
+</style>
+</head>
+<body>
+  <h1>BNP Warehouse &middot; Manager Dashboard</h1>
+  <div class="sub" id="subLine">Loading&hellip;</div>
+
+  <div class="tabs" id="tabs"></div>
+  <div class="rows" id="rows"><div class="empty-note">Loading&hellip;</div></div>
+  <div class="status-line" id="statusLine"></div>
+
+<script>
+  // =======================================================================
+  // Same deployed Apps Script /exec URL as index.html. Get it from
+  // Deploy > Manage deployments in the Apps Script editor if it changes.
+  // =======================================================================
+  // Same-origin Netlify Function, not script.google.com directly — see the
+  // comment on this same line in index.html and netlify/functions/board-data.js
+  // for why. This dashboard's setFlag button clicks also go through it, so
+  // it forwards ?action=setFlag calls straight through, uncached.
+  var SCRIPT_URL = '/.netlify/functions/board-data';
+
+  var REFRESH_MS = 15000; // matches DASHBOARD_REFRESH_SECONDS in Code.gs
+  var REFRESH_JITTER_MS = 4000; // same reasoning as index.html — keeps this poll from landing in lockstep with the TVs' own polls
+  var BOARD_KEYS = [];
+  var BOARD_TITLES = {};
+  var activeBoard = null;
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  function apiUrl(params) {
+    var q = 'dashboard=1&format=json&_=' + Date.now();
+    Object.keys(params || {}).forEach(function (k) { q += '&' + k + '=' + encodeURIComponent(params[k]); });
+    return SCRIPT_URL + '?' + q;
+  }
+
+  function renderTabs() {
+    var el = document.getElementById('tabs');
+    el.innerHTML = '';
+    BOARD_KEYS.forEach(function (key) {
+      var btn = document.createElement('div');
+      btn.className = 'tab' + (key === activeBoard ? ' active' : '');
+      btn.textContent = BOARD_TITLES[key];
+      btn.onclick = function () { switchBoard(key); };
+      el.appendChild(btn);
+    });
+  }
+
+  function switchBoard(key) {
+    activeBoard = key;
+    renderTabs();
+    document.getElementById('rows').innerHTML = '<div class="empty-note">Loading&hellip;</div>';
+    loadBoard();
+  }
+
+  function rowClasses(r) {
+    var cls = 'row';
+    if (r.inProcess) cls += ' in-process';
+    if (r.urgent) cls += ' urgent';
+    if (r.complete) cls += ' complete';
+    if (r.seeMgmt) cls += ' mgmt';
+    return cls;
+  }
+
+  // Every button here is a plain on/off toggle: each onclick passes
+  // !r.<field>, i.e. the opposite of the row's current value, so clicking
+  // Urgent (or any other button) again always flips it back off.
+  function actionsHtml(r, dash) {
+    var html = '<div class="actions">';
+    if (dash.urgent) {
+      html += '<button class="btn btn-urgent' + (r.urgent ? ' on' : '') + '" onclick="toggleFlag(\'' + esc(r.key) + '\',\'urgent\',' + (!r.urgent) + ')">Urgent</button>';
+    }
+    if (dash.seeMgmt) {
+      html += '<button class="btn btn-mgmt' + (r.seeMgmt ? ' on' : '') + '" onclick="toggleFlag(\'' + esc(r.key) + '\',\'seeMgmt\',' + (!r.seeMgmt) + ')">See MGMT</button>';
+    }
+    if (!dash.urgentOnly) {
+      html += '<button class="btn btn-process' + (r.inProcess ? ' on' : '') + '" onclick="toggleFlag(\'' + esc(r.key) + '\',\'inProcess\',' + (!r.inProcess) + ')">In Process</button>';
+      if (dash.completeLabel) {
+        html += '<button class="btn btn-complete' + (r.complete ? ' on' : '') + '" onclick="toggleFlag(\'' + esc(r.key) + '\',\'complete\',' + (!r.complete) + ')">' + esc(dash.completeLabel) + '</button>';
+      }
+    }
+    html += '</div>';
+    return html;
+  }
+
+  function renderRows(payload) {
+    document.getElementById('subLine').textContent =
+      payload.title + ' — today’s orders only · refreshes every ' + Math.round(REFRESH_MS / 1000) + 's';
+    var el = document.getElementById('rows');
+    if (!payload.rows.length) {
+      el.innerHTML = '<div class="empty-note">Nothing active on ' + esc(payload.title) + ' today</div>';
+      return;
+    }
+    var html = '';
+    payload.rows.forEach(function (r) {
+      html += '<div class="' + rowClasses(r) + '">' +
+        '<div class="row-main">' +
+        (r.num ? '<div class="row-num">' + esc(r.num) + '</div>' : '') +
+        '<div class="row-desc">' + esc(r.desc) + '</div>' +
+        (r.meta ? '<div class="row-meta">' + esc(r.meta) + '</div>' : '') +
+        '</div>' +
+        actionsHtml(r, payload.dashboard || {}) +
+        '</div>';
+    });
+    el.innerHTML = html;
+  }
+
+  function loadBoard() {
+    if (!activeBoard) return;
+    var requestedBoard = activeBoard;
+    fetch(apiUrl({ board: activeBoard }))
+      .then(function (r) { return r.json(); })
+      .then(function (payload) {
+        if (requestedBoard !== activeBoard) return; // switched tabs mid-flight
+        if (payload.error) throw new Error(payload.error);
+        renderRows(payload);
+        document.getElementById('statusLine').textContent = 'Updated ' + new Date().toLocaleTimeString();
+      })
+      .catch(function (err) {
+        document.getElementById('statusLine').textContent = 'Could not refresh: ' + (err && err.message ? err.message : err);
+        // Same Safari/Apps Script redirect-token timing as index.html — a
+        // fresh attempt a few seconds later almost always succeeds, so
+        // don't just wait out the rest of the normal REFRESH_MS cycle.
+        setTimeout(loadBoard, 3000);
+      });
+  }
+
+  function toggleFlag(key, field, value) {
+    // Optimistic-ish: the next poll (or the reload triggered right after
+    // this succeeds) picks up the confirmed state either way.
+    fetch(apiUrl({ action: 'setFlag', board: activeBoard, key: key, field: field, value: value }))
+      .then(function (r) { return r.json(); })
+      .then(function (result) {
+        if (result.error) throw new Error(result.error);
+        loadBoard();
+      })
+      .catch(function (err) {
+        document.getElementById('statusLine').textContent = 'Action failed: ' + (err && err.message ? err.message : err);
+        loadBoard();
+      });
+  }
+
+  // Unlike loadBoard()'s ongoing poll, this first call used to be
+  // one-shot: if it failed even once (a momentary blip), the dashboard
+  // showed the red error card and just sat there until someone remembered
+  // to manually reload the page — nothing ever retried it. Now it quietly
+  // retries a few times before showing anything, and keeps retrying in the
+  // background even after showing the error, so it clears itself the
+  // moment the endpoint answers again instead of needing a manual refresh.
+  var initAttempts = 0;
+  var INIT_RETRY_MS = 5000;
+  var INIT_FAILURES_BEFORE_SHOWING_ERROR = 3;
+
+  function init() {
+    initAttempts++;
+    fetch(apiUrl({ list: 1 }))
+      .then(function (r) { return r.json(); })
+      .then(function (payload) {
+        if (payload.error) throw new Error(payload.error);
+        initAttempts = 0;
+        REFRESH_MS = (payload.refreshSeconds || 15) * 1000;
+        BOARD_KEYS = payload.boards.map(function (b) { return b.key; });
+        payload.boards.forEach(function (b) { BOARD_TITLES[b.key] = b.title; });
+        activeBoard = BOARD_KEYS[0];
+        renderTabs();
+        loadBoard();
+        (function scheduleNextLoad() {
+          var jitter = Math.floor(Math.random() * REFRESH_JITTER_MS) - (REFRESH_JITTER_MS / 2);
+          var delay = Math.max(3000, REFRESH_MS + jitter);
+          setTimeout(function () { loadBoard(); scheduleNextLoad(); }, delay);
+        })();
+      })
+      .catch(function (err) {
+        console.warn('Dashboard init failed (' + initAttempts + ' in a row):', err);
+        if (initAttempts < INIT_FAILURES_BEFORE_SHOWING_ERROR) {
+          setTimeout(init, INIT_RETRY_MS);
+          return;
+        }
+        document.getElementById('subLine').textContent = '';
+        document.getElementById('rows').innerHTML =
+          '<div class="err-note">Could not reach the Apps Script dashboard endpoint. Check SCRIPT_URL at the top of dashboard.html and that the deployment allows anonymous access.<br><br>' + esc(err) + '</div>';
+        setTimeout(init, INIT_RETRY_MS);
+      });
+  }
+
+  init();
+</script>
+</body>
+</html>
