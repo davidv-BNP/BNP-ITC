@@ -33,16 +33,17 @@
   .row-card { display:flex; align-items:center; gap:calc(var(--scale) * 2vh); background:var(--panel); border:0.15vh solid var(--border); border-radius:calc(var(--scale) * 1.4vh); padding:calc(var(--scale) * 0.9vh) calc(var(--scale) * 1.8vh); margin-bottom:calc(var(--scale) * 0.9vh); }
   .row-card.qt { border:0.1vh solid var(--urgent); border-left:0.5vh solid var(--urgent); background:var(--urgent-bg); }
 
-  /* Manager-dashboard-driven states: In Process pulses a border in the same
-     accent color as the number chip; Urgent turns the whole line red;
-     Complete (Order Fulfillment only — everywhere else Complete removes the
-     row entirely before it ever reaches this renderer) turns it green;
+  /* Manager-dashboard-driven states: In Process pulses a green border
+     (easier to spot from the floor than the orange number-chip color it
+     used to share); Urgent turns the whole line red; Complete (Order
+     Fulfillment only — everywhere else Complete removes the row entirely
+     before it ever reaches this renderer) fills the line solid green;
      See MGMT pulses the same way as In Process but in bright magenta —
      same animation timing, different color, its own keyframes since a
      CSS animation can't take a variable color per element. */
   @keyframes rowPulse {
-    0%, 100% { box-shadow: 0 0 0 0 var(--accent); border-color: var(--accent); }
-    50% { box-shadow: 0 0 calc(var(--scale) * 1.6vh) calc(var(--scale) * 0.15vh) var(--accent); border-color: var(--accent); }
+    0%, 100% { box-shadow: 0 0 0 0 var(--ok); border-color: var(--ok); }
+    50% { box-shadow: 0 0 calc(var(--scale) * 1.6vh) calc(var(--scale) * 0.15vh) var(--ok); border-color: var(--ok); }
   }
   @keyframes rowPulseMgmt {
     0%, 100% { box-shadow: 0 0 0 0 var(--mgmt); border-color: var(--mgmt); }
